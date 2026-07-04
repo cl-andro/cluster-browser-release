@@ -1,0 +1,109 @@
+name: Build & Release Cluster Browser APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_notes:
+        description: 'Release Notes (optional)'
+        required: false
+        type: string
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Release Repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Calculate Next Version Tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Fetch the latest release tag using GitHub CLI
+          LATEST_TAG=$(gh release view --json tagName --template '{{.tagName}}' 2>/dev/null || echo "v1.0")
+          echo "Latest tag found: $LATEST_TAG"
+          
+          # Strip the leading 'v'
+          VERSION=${LATEST_TAG#v}
+          
+          # Parse Major and Minor numbers
+          MAJOR=$(echo "$VERSION" | cut -d. -f1)
+          MINOR=$(echo "$VERSION" | cut -d. -f2)
+          
+          if [ -z "$MINOR" ]; then MINOR=0; fi
+          
+          # Increment minor version
+          MINOR=$((MINOR + 1))
+          
+          # Rollover logic (e.g., v1.9 -> v2.0)
+          if [ "$MINOR" -ge 10 ]; then
+            MINOR=0
+            MAJOR=$((MAJOR + 1))
+          fi
+          
+          NEXT_TAG="v$MAJOR.$MINOR"
+          echo "Calculated next tag: $NEXT_TAG"
+          
+          # Save variables to environment
+          echo "NEXT_TAG=$NEXT_TAG" >> $GITHUB_ENV
+          echo "APK_NAME=cluster-browser-$NEXT_TAG.apk" >> $GITHUB_ENV
+
+      - name: Checkout Browser Repo (Private)
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PAT_TOKEN }}
+          repository: 'cl-andro/cluster-browser'
+          path: 'browser-source'
+
+      - name: Copy Unsigned APK
+        run: |
+          if [ ! -f browser-source/cluster-browser-unsigned.apk ]; then
+            echo "Error: cluster-browser-unsigned.apk not found in the private repository!"
+            exit 1
+          fi
+          cp browser-source/cluster-browser-unsigned.apk ./unsigned.apk
+
+      - name: Decode Keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > release-signing-key.jks
+
+      - name: Align APK
+        run: |
+          ZIPALIGN=$(find $ANDROID_HOME/build-tools/ -name zipalign | sort -V | tail -n 1)
+          if [ -z "$ZIPALIGN" ]; then
+            echo "Error: zipalign utility not found!"
+            exit 1
+          fi
+          echo "Using zipalign at: $ZIPALIGN"
+          $ZIPALIGN -f -p 4 ./unsigned.apk ./aligned.apk
+
+      - name: Sign APK
+        run: |
+          APKSIGNER=$(find $ANDROID_HOME/build-tools/ -name apksigner | sort -V | tail -n 1)
+          if [ -z "$APKSIGNER" ]; then
+            echo "Error: apksigner utility not found!"
+            exit 1
+          fi
+          echo "Using apksigner at: $APKSIGNER"
+          $APKSIGNER sign --ks release-signing-key.jks \
+            --ks-pass "pass:${{ secrets.KEYSTORE_PASSWORD }}" \
+            --ks-key-alias "${{ secrets.KEY_ALIAS }}" \
+            --key-pass "pass:${{ secrets.KEY_PASSWORD }}" \
+            --out "${{ env.APK_NAME }}" \
+            ./aligned.apk
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.NEXT_TAG }}
+          name: "Release ${{ env.NEXT_TAG }}"
+          body: ${{ inputs.release_notes }}
+          files: ${{ env.APK_NAME }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
