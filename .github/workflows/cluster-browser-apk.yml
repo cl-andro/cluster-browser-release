@@ -59,13 +59,14 @@ jobs:
           repository: 'cl-andro/cluster-browser'
           path: 'browser-source'
 
-      - name: Copy Unsigned APK
+      - name: Reconstruct Unsigned APK from Split Parts
         run: |
-          if [ ! -f browser-source/cluster-browser-unsigned.apk ]; then
-            echo "Error: cluster-browser-unsigned.apk not found in the private repository!"
+          if [ ! -f browser-source/cluster-browser-unsigned.apk.part.aa ]; then
+            echo "Error: Split parts for unsigned APK not found in the private repository!"
             exit 1
           fi
-          cp browser-source/cluster-browser-unsigned.apk ./unsigned.apk
+          cat browser-source/cluster-browser-unsigned.apk.part.* > ./unsigned.apk
+          echo "Reconstructed unsigned APK successfully."
 
       - name: Decode Keystore
         run: |
